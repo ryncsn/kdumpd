@@ -1,0 +1,3 @@
+[submodule "klibc"]
+	path = klibc
+	url = ./klibc
