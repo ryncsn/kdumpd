@@ -21,12 +21,12 @@
 
 static int nbd_socket_alloc(struct nbd_dev *dev) {
 	int socket[2];
-	int err;
+	int ret;
 
-	err = socketpair(AF_UNIX, SOCK_STREAM, 0, socket);
-	if (err) {
-		// TODO stderr
-		printf("Failed to open socker.");
+	ret = socketpair(AF_UNIX, SOCK_STREAM, 0, socket);
+	if (ret) {
+		fprintf(stderr, "Failed to allocate NBD socket.\n");
+		return ret;
 	}
 
 	dev->k_socket_fd = socket[0];
@@ -35,72 +35,74 @@ static int nbd_socket_alloc(struct nbd_dev *dev) {
 	return 0;
 }
 
-static int nbd_fd_setup(struct nbd_dev *ndev, char *nbd_path, int bs, int cnt) {
-	int nbd_fd, err;
+static int nbd_fd_setup(struct nbd_dev *ndev, int bs, int cnt) {
+	int nbd_fd, ret;
 
-	nbd_fd = open(nbd_path, O_RDWR);
+	nbd_fd = open(ndev->nbd_dev_file, O_RDWR);
 	if (nbd_fd == -1) {
-		// TODO error
+		fprintf(stderr, "Failed to open NBD device.\n");
 		return -1;
 	}
 
-	printf("NBD_SET_BLKSIZE %x\n", bs);
-	err = ioctl(nbd_fd, NBD_SET_BLKSIZE, bs);
-	if (err)
-		printf("TODO Failure.");
+	ret = ioctl(nbd_fd, NBD_SET_BLKSIZE, bs);
+	if (ret) {
+		fprintf(stderr, "Failed to set NBD block size.\n");
+		goto out_err;
+	}
 
 	printf("NBD_SET_SIZE_BLOCKS %x\n", cnt);
-	err = ioctl(nbd_fd, NBD_SET_SIZE_BLOCKS, cnt);
-	if (err)
-		printf("TODO Failure.");
-
-	// printf("NBD_SET_SIZE %x\n", bs * cnt);
-	// err = ioctl(nbd_fd, NBD_SET_SIZE, bs * cnt);
-	// if (err)
-	// 	printf("TODO Failure.");
+	ret = ioctl(nbd_fd, NBD_SET_SIZE_BLOCKS, cnt);
+	if (ret) {
+		fprintf(stderr, "Failed to set NBD size.\n");
+		goto out_err;
+	}
 
 	printf("NBD_CLEAR_SOCK");
-	err = ioctl(nbd_fd, NBD_CLEAR_SOCK);
-	if (err)
-		printf("TODO Failure.");
+	ret = ioctl(nbd_fd, NBD_CLEAR_SOCK);
+	if (ret) {
+		fprintf(stderr, "Failed to clear up NBD socket.\n");
+		goto out_err;
+	}
 
 	printf("NBD_CLEAR_QUE");
-	err = ioctl(nbd_fd, NBD_CLEAR_QUE);
-	if (err)
-		printf("TODO Failure.");
+	ret = ioctl(nbd_fd, NBD_CLEAR_QUE);
+	if (ret) {
+		fprintf(stderr, "Failed to clear up NBD queue.\n");
+		goto out_err;
+	}
 
 	ndev->nbd_fd = nbd_fd;
 	return 0;
+
+out_err:
+	return ret;
 }
 
-static int rw_len(int fd, void *buf, size_t len, char is_write) {
-	ssize_t res;
+static ssize_t rw_len(int fd, void *buf, size_t len, char is_write) {
+	ssize_t ret;
 
 	while (len > 0) {
 		if (is_write)
-			res = write(fd, buf, len);
+			ret = write(fd, buf, len);
 		else
-			res = read(fd, buf, len);
+			ret = read(fd, buf, len);
 
-		if (res > 0) {
-			len -= res;
-			buf += res;
-			continue;
-		}
-
-		if (errno != EAGAIN) {
-			printf("TODO Failure.");
-			break;
+		if (ret > 0) {
+			len -= ret;
+			buf += ret;
 		} else {
-			printf("TODO Failure.");
+			if (errno != EAGAIN) {
+				fprintf(stderr, "NBD socket read error.\n");
+				return errno;
+			}
 		}
 	}
 
-	return res;
+	return ret;
 }
 
 static int nbd_worker_loop(struct nbd_dev *ndev) {
-	int ret, nbd_fd;
+	int ret;
 	struct nbd_request req;
 	struct nbd_reply rep;
 	char *req_data;
@@ -120,66 +122,59 @@ static int nbd_worker_loop(struct nbd_dev *ndev) {
 		}
 
 		if (req.magic != htonl(NBD_REQUEST_MAGIC)) {
-			printf("nbd socket error: Invalid magic.");
+			fprintf(stderr, "NBD socket error: Invalid magic.\n");
 			continue;
 		}
 
 		memcpy(rep.handle, req.handle, sizeof(rep.handle));
 		switch (req.type & NBD_CMD_MASK_COMMAND) {
 			case NBD_CMD_DISC:
-				printf("DEBUG: NBD_CMD_DISC\n");
 				/* DISC: DISConnect */
+				printf("Quit on NBD_CMD_DISC\n");
 				return 0;
 
 			case NBD_CMD_WRITE:
-				printf("DEBUG: NBD_CMD_WRITE, len %x, from %llx\n", req.len, req.from);
-
 				req_data = malloc(req.len);
+
 				rw_len(ndev->u_socket_fd, req_data, req.len, 0);
 				ret = ndev->ops->write(req_data, req.len, req.from,
 						ndev->opaque);
 
-				printf("DEBUG: NBD_CMD_WRITE_REP\n");
 				rep.magic = htonl(NBD_REPLY_MAGIC);
 				rep.error = htonl(ret);
 				rw_len(ndev->u_socket_fd, &rep, sizeof(rep), 1);
-				printf("DEBUG: NBD_CMD_WRITE_REP DONE\n");
 
 				break;
-
 			case NBD_CMD_READ:
-				printf("DEBUG: NBD_CMD_READ, len %x, from %llx\n", req.len, req.from);
 				req_data = malloc(req.len);
 				ret = ndev->ops->read(req_data, req.len, req.from,
 						ndev->opaque);
 
-				printf("DEBUG: NBD_CMD_READ REP\n");
 				rep.magic = htonl(NBD_REPLY_MAGIC);
 				rep.error = htonl(ret);
+
 				rw_len(ndev->u_socket_fd, &rep, sizeof(rep), 1);
-				printf("DEBUG: NBD_CMD_READ REP DONE 1\n");
 				rw_len(ndev->u_socket_fd, req_data, req.len, 1);
-				printf("DEBUG: NBD_CMD_READ REP DONE 2\n");
 
 				break;
-
 			case NBD_CMD_FLUSH:
 			case NBD_CMD_TRIM:
-				printf("Unsupported NBD CMD: %x", req.type);
+				fprintf(stderr, "Unsupported NBD CMD: %x\n",
+					req.type);
 				break;
-
 			default:
-				// TODO
-				printf("Invalid NBD CMD: %x", req.type);
+				fprintf(stderr, "Invalid NBD CMD: %x\n",
+					req.type);
 				break;
 		}
 
 		if (req_data) {
 			free(req_data);
+			req_data = NULL;
 		}
 	}
 
-	return nbd_fd;
+	return ret;
 }
 
 static int nbd_worker(struct nbd_dev *ndev) {
@@ -189,13 +184,13 @@ static int nbd_worker(struct nbd_dev *ndev) {
 
 	ret = ioctl(ndev->nbd_fd, NBD_SET_SOCK, ndev->k_socket_fd);
 	if (ret) {
-		printf("TODO\n");
+		fprintf(stderr, "Failed to set NBD socket\n");
 	}
 
 	/* Start and hold the device */
 	ret = ioctl(ndev->nbd_fd, NBD_DO_IT);
 	if (ret) {
-		printf("TODO\n");
+		fprintf(stderr, "Failed to start NBD device\n");
 	}
 
 	return ret;
@@ -210,21 +205,17 @@ static int nbd_sub_worker(struct nbd_dev *ndev) {
 static int nbd_start_worker(struct nbd_dev *ndev) {
 	int ret;
 	pid_t worker_pid, sub_worker_pid;
-
-	printf("DEBUG: Starting nbd_worker\n");
+	printf("Starting NBD device worker on device %s.\n", ndev->nbd_dev_file);
 
 	worker_pid = fork();
 	if (!worker_pid) {
-		printf("DEBUG: Starting nbd_sub_worker\n");
-
 		sub_worker_pid = fork();
-
 		if (!sub_worker_pid) {
 			nbd_sub_worker(ndev);
 		} else {
 			nbd_worker(ndev);
 			waitpid(sub_worker_pid, &ret, 0);
-			// TODO: check ret
+			// TODO: check here
 		}
 	} else {
 		close(ndev->u_socket_fd);
@@ -243,8 +234,9 @@ static int vmcore_reuse_rw(char *data, int len, int from,
 
 	idx = from / REUSE_AREA_SIZE;
 	cdev = opaque;
+
 	if (idx > cdev->area_num) {
-		printf("ERR: DEBUG: %x out of border\n", from);
+		fprintf(stderr, "Out of VMCORE IO request 0x%x@0x%x\n", len, from);
 		return -1;
 	}
 
@@ -253,14 +245,9 @@ static int vmcore_reuse_rw(char *data, int len, int from,
 		offset = from & (REUSE_AREA_SIZE - 1);
 		lseek(cdev->vmcore_fd, cdev->areas[idx].offset + offset, SEEK_SET);
 
-		lseek(cdev->vmcore_fd, cdev->areas[idx].offset + offset, SEEK_SET);
-		printf("DEBUG: Hit 0x%lx - 0x%lx\n", cdev->areas[idx].offset, cdev->areas[idx].offset + copy);
-
 		if (is_write) {
-			printf("DEBUG: lseek 0x%lx, write 0x%x\n", cdev->areas[idx].offset + offset, copy);
 			write(cdev->vmcore_fd, data, copy);
 		} else {
-			printf("DEBUG: lseek 0x%lx, read 0x%x\n", cdev->areas[idx].offset + offset, copy);
 			read(cdev->vmcore_fd, data, copy);
 		}
 
@@ -316,11 +303,11 @@ int crash_block_dev_start(struct crash_block_dev *cdev) {
 };
 
 int crash_block_dev_stop(struct crash_block_dev *cdev) {
-	// TODO
+	// TODO: Not stopping yet
 	return 0;
 };
 
-struct crash_block_dev* crash_block_dev_new(size_t size) {
+struct crash_block_dev* crash_block_dev_new(char *nbd_dev_file, size_t max_size) {
 	struct nbd_dev *ndev;
 	struct crash_block_dev *cdev;
 
@@ -333,6 +320,7 @@ struct crash_block_dev* crash_block_dev_new(size_t size) {
 	cdev->nbd_dev = ndev;
 	ndev->ops = &cdev_io_ops;
 	ndev->opaque = cdev;
+	ndev->nbd_dev_file = strdup(nbd_dev_file);
 
 	/* Find reuseable areas*/
 	actual_size = vmcore_find_reuseable("/proc/vmcore", 0, cdev);
@@ -342,7 +330,7 @@ struct crash_block_dev* crash_block_dev_new(size_t size) {
 	block_size = 512;
 	blocks = actual_size / block_size;
 
-	nbd_fd_setup(ndev, "/dev/nbd0", block_size, blocks);
+	nbd_fd_setup(ndev, block_size, blocks);
 	nbd_socket_alloc(ndev);
 
 	return cdev;
