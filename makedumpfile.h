@@ -9,17 +9,10 @@
 #include <time.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
-#include <zlib.h>
 #include <libelf.h>
 #include <byteswap.h>
 #include <getopt.h>
 #include <sys/mman.h>
-#ifdef USELZO
-#include <lzo/lzo1x.h>
-#endif
-#ifdef USESNAPPY
-#include <snappy-c.h>
-#endif
 #include "common.h"
 #include "dwarf_info.h"
 #include <semaphore.h>
@@ -493,10 +486,6 @@ do { \
 #define BUF_PARALLEL(i)			info->parallel_info[i].buf
 #define BUF_OUT_PARALLEL(i)		info->parallel_info[i].buf_out
 #define MMAP_CACHE_PARALLEL(i)		info->parallel_info[i].mmap_cache
-#define ZLIB_STREAM_PARALLEL(i)		info->parallel_info[i].zlib_stream
-#ifdef USELZO
-#define WRKMEM_PARALLEL(i)		info->parallel_info[i].wrkmem
-#endif
 /*
  * kernel version
  *
@@ -1287,10 +1276,6 @@ struct parallel_info {
 	unsigned char		*buf;
 	unsigned char 		*buf_out;
 	struct mmap_cache	*mmap_cache;
-	z_stream		zlib_stream;
-#ifdef USELZO
-	lzo_bytep		wrkmem;
-#endif
 };
 
 struct ppc64_vmemmap {
@@ -1311,7 +1296,6 @@ struct DumpInfo {
 	int		num_dump_level;      /* number of dump level */
 	int		array_dump_level[NUM_ARRAY_DUMP_LEVEL];
 	int		flag_compress;       /* flag of compression */
-	int		flag_lzo_support;    /* flag of LZO compression support */
 	int		flag_elf_dumpfile;   /* flag of creating ELF dumpfile */
 	int		flag_generate_vmcoreinfo;/* flag of generating vmcoreinfo file */
 	int		flag_read_vmcoreinfo;    /* flag of reading vmcoreinfo file */
@@ -2334,7 +2318,6 @@ struct elf_prstatus {
  * non-printable, just used for implementation.
  */
 #define OPT_BLOCK_ORDER         'b'
-#define OPT_COMPRESS_ZLIB       'c'
 #define OPT_DEBUG               'D'
 #define OPT_DUMP_LEVEL          'd'
 #define OPT_ELF_DUMPFILE        'E'
@@ -2344,7 +2327,6 @@ struct elf_prstatus {
 #define OPT_GENERATE_VMCOREINFO 'g'
 #define OPT_HELP                'h'
 #define OPT_READ_VMCOREINFO     'i'
-#define OPT_COMPRESS_LZO        'l'
 #define OPT_COMPRESS_SNAPPY     'p'
 #define OPT_REARRANGE           'R'
 #define OPT_VERSION             'v'
@@ -2383,8 +2365,6 @@ unsigned long long ptom_xen(unsigned long long paddr);
 unsigned long long get_free_memory_size(void);
 int calculate_cyclic_buffer_size(void);
 int prepare_splitblock_table(void);
-int initialize_zlib(z_stream *stream, int level);
-int finalize_zlib(z_stream *stream);
 
 int parse_line(char *str, char *argv[]);
 char *shift_string_left(char *s, int cnt);

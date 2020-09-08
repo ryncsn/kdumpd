@@ -3600,18 +3600,23 @@ free_cache_data(struct cache_data *cd)
 }
 
 void
-print_reusable_cyclic_single(int count)
+print_reusable_cyclic_single(
+		unsigned long start, size_t max_size, size_t block_align,
+		int (*cb)(unsigned long offset, void *blob),
+		void *blob)
+
 {
-	mdf_pfn_t pfn, pfn_start = 0,  pfn_end = 0, swap;
+	long long pfn_start = 0, pfn_end = 0, pfn;
 	struct cycle cycle = {0};
 
-	struct {
-		mdf_pfn_t pfn_start;
-		mdf_pfn_t pfn_end;
-	} reusable_area [count];
-	memset(reusable_area, 0, sizeof(reusable_area));
+	MSG("Iterating\n");
 
-	for_each_cycle(0, info->max_mapnr, &cycle) {
+	block_align /= info->page_size;
+
+	for_each_cycle(paddr_to_pfn(offset_to_paddr(start)),
+			info->max_mapnr,
+			&cycle)
+	{
 		if (info->flag_cyclic) {
 			if (!create_2nd_bitmap(&cycle)) {
 				ERRMSG("Failed to create bitmap.\n");
@@ -3619,59 +3624,47 @@ print_reusable_cyclic_single(int count)
 		}
 
 		for (pfn = cycle.start_pfn; pfn < cycle.end_pfn; pfn++) {
+			/* Ensure it's not on a memory hole */
 			if (is_dumpable(info->bitmap1, pfn, &cycle)) {
-				/* Ensure it's not on a memory hole */
+				/* Not on memory hole and not dumpable,
+				 * it's reusable page */
 				if (!is_dumpable(info->bitmap2, pfn, &cycle)) {
-					/* Usable region */
-					if (pfn_end == pfn - 1) {
+					if (pfn_start == -1) {
+						pfn_start = pfn;
+						pfn_end = pfn;
+					} else if (pfn_end == pfn - 1) {
 						pfn_end ++;
-						continue;
+					} else {
+						MSG("ERROR\n");
 					}
+					continue;
 				}
 			}
 
 			/* End of a continues reusable region */
-			pfn_end = round(pfn_end + 1, info->mem_reuse_align);
-			pfn_start = roundup(pfn_start, info->mem_reuse_align);
+			pfn_end = round(pfn_end + 1, block_align);
+			pfn_start = roundup(pfn_start, block_align);
 
-			if (pfn_end > pfn_start) {
-				for (int i = 0; i < count; ++i) {
-					if (reusable_area[i].pfn_end - reusable_area[i].pfn_start < pfn_end - pfn_start) {
-						swap = reusable_area[i].pfn_end;
-						reusable_area[i].pfn_end = pfn_end;
-						pfn_end = swap;
+			while (pfn_end > pfn_start) {
+				pfn_start += block_align;
+				max_size -= block_align;
 
-						swap = reusable_area[i].pfn_start;
-						reusable_area[i].pfn_start = pfn_start;
-						pfn_start = swap;
-					}
-				}
+				if (cb(paddr_to_offset(pfn_to_paddr(pfn_start)), blob))
+					return;
+
+				if (!max_size)
+					return;
 			}
 
-			pfn_start = pfn_end = pfn;
+			pfn_start = pfn_end = -1;
 		}
-	}
-
-	MSG("Reuseable memory range:\n");
-	for (int i = 0; i < count; ++i) {
-		if (reusable_area[i].pfn_end - reusable_area[i].pfn_start == 0) {
-			if (i == 0)
-				MSG("- No reuseable memory area found. -\n");
-			break;
-		}
-
-		MSG("0x%llx - 0x%llx (%llx)\n",
-				pfn_to_paddr(reusable_area[i].pfn_start),
-				pfn_to_paddr(reusable_area[i].pfn_end),
-				paddr_to_offset(pfn_to_paddr(reusable_area[i].pfn_start)));
-
 	}
 }
 
-
-int show_mem(void)
+int find_mem(unsigned long start, size_t max_size, size_t block_align,
+	int (*cb)(unsigned long offset, void *blob),
+	void *blob)
 {
-	uint64_t vmcoreinfo_addr, vmcoreinfo_len;
 	struct cycle cycle = {0};
 
 	// Assuming kernel > 5.8.0
@@ -3679,7 +3672,7 @@ int show_mem(void)
 
 	info->dump_level = MAX_DUMP_LEVEL;
 
-	if (!open_dump_memory("/proc/kcore"))
+	if (!open_dump_memory("/proc/vmcore"))
 		return FALSE;
 
 	if (!get_elf_loads(info->fd_memory, info->name_memory))
@@ -3715,7 +3708,7 @@ int show_mem(void)
 	if (!create_2nd_bitmap(&cycle))
 		return FALSE;
 
-	print_reusable_cyclic_single(10);
+	print_reusable_cyclic_single(start, max_size, block_align, cb, blob);
 
 	free_bitmap_buffer();
 
@@ -3798,7 +3791,10 @@ close_files_for_creating_dumpfile(void)
 }
 
 int
-mkdump_file_main()
+mkdumpf_find_reusable(
+		unsigned long start, size_t max_size, size_t block_align,
+		int (*cb)(unsigned long offset, void *blob),
+		void *blob)
 {
 	if ((info = calloc(1, sizeof(struct DumpInfo))) == NULL) {
 		ERRMSG("Can't allocate memory for the pagedesc cache. %s.\n",
@@ -3833,7 +3829,7 @@ mkdump_file_main()
 	info->bufsize_cyclic = 1024;
 
 	// XXX: No kernel version check
-	if (!show_mem())
+	if (!find_mem(start, max_size, block_align, cb, blob))
 			goto out;
 
 	retcd = COMPLETED;

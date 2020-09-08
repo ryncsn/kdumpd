@@ -451,6 +451,25 @@ get_elf32_phdr(int fd, char *filename, int index, Elf32_Phdr *phdr)
 	return TRUE;
 }
 
+unsigned long long
+offset_to_paddr(long offset)
+{
+	int i;
+	unsigned long long paddr;
+	struct pt_load_segment *pls;
+
+	for (i = offset = 0; i < num_pt_loads; i++) {
+		pls = &pt_loads[i];
+		if ((offset >= pls->file_offset)
+		    && (offset < pls->file_offset + pls->file_size)) {
+			paddr = (unsigned long long)(offset - pls->file_offset) +
+				pls->phys_start;
+			break;
+		}
+	}
+	return paddr;
+}
+
 /*
  * Convert Physical Address to File Offset.
  *  If this function returns 0x0, File Offset isn't found.

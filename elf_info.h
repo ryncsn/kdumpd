@@ -32,6 +32,7 @@ int get_elf32_phdr(int fd, char *filename, int index, Elf32_Phdr *phdr);
 
 off_t paddr_to_offset(unsigned long long paddr);
 off_t paddr_to_offset2(unsigned long long paddr, off_t hint);
+unsigned long long offset_to_paddr(long offset);
 unsigned long long page_head_to_phys_start(unsigned long long head_paddr);
 unsigned long long page_head_to_phys_end(unsigned long long head_paddr);
 off_t offset_to_pt_load_start(off_t offset);

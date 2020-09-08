@@ -1,5 +1,5 @@
 /*
- * A small program that setup the squash mount and overlayfs mount without using libc.
+ * A small program that use reusable space in vmcore as block device
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -13,11 +13,14 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <linux/nbd.h>
+#include <sys/mman.h>
 
 #include <errno.h>
 
 #include "crash-blk.h"
 #include "utils.h"
+
+unsigned long vmcore_span_end;
 
 static int nbd_socket_alloc(struct nbd_dev *dev) {
 	int socket[2];
@@ -187,6 +190,8 @@ static int nbd_worker(struct nbd_dev *ndev) {
 		fprintf(stderr, "Failed to set NBD socket\n");
 	}
 
+	mlockall(MCL_FUTURE);
+
 	/* Start and hold the device */
 	ret = ioctl(ndev->nbd_fd, NBD_DO_IT);
 	if (ret) {
@@ -198,6 +203,8 @@ static int nbd_worker(struct nbd_dev *ndev) {
 
 static int nbd_sub_worker(struct nbd_dev *ndev) {
 	close(ndev->k_socket_fd);
+
+	mlockall(MCL_FUTURE);
 
 	return nbd_worker_loop(ndev);
 }
@@ -211,6 +218,7 @@ static int nbd_start_worker(struct nbd_dev *ndev) {
 	if (!worker_pid) {
 		sub_worker_pid = fork();
 		if (!sub_worker_pid) {
+			/* Don't dead lock ourselves with crash-blk as swap */
 			nbd_sub_worker(ndev);
 		} else {
 			nbd_worker(ndev);
@@ -271,31 +279,47 @@ static struct nbd_io_ops cdev_io_ops = {
 	vmcore_reuse_write,
 };
 
+extern int mkdumpf_find_reusable(
+		unsigned long start, size_t max_size, size_t block_align,
+		int (*cb)(unsigned long offset, void *blob),
+		void *blob);
+
+static int _vmcore_find_reusable_cb(unsigned long offset, void *blob) {
+	struct crash_block_dev *cdev = (struct crash_block_dev*)blob;
+
+	cdev->areas[cdev->area_num].offset = offset;
+	cdev->areas[cdev->area_num].size = REUSE_AREA_SIZE;
+
+	cdev->size += REUSE_AREA_SIZE;
+	cdev->area_num ++;
+
+	printf("Found %d reusable region, 0x%x@0x%lx\n",
+		cdev->area_num, REUSE_AREA_SIZE, offset);
+
+	cdev->vmcore_end = cdev->vmcore_end > offset + REUSE_AREA_SIZE ?
+		cdev->vmcore_end : offset + REUSE_AREA_SIZE;
+
+	if (cdev->area_num == cdev->area_num_max)
+		return 1;
+
+	return 0;
+}
+
 // TODO maxsize not used
-static size_t vmcore_find_reuseable(char *vmcore_file, size_t max_size, struct crash_block_dev *data) {
-	int i = 0;
-	unsigned long start, end, offset;
-	size_t size = 0;
-	FILE *f = fopen("/vmcore-debug", "r");
+static size_t vmcore_find_reuseable(struct crash_block_dev *cdev, size_t max_size) {
+	int area_num_max;
 
-	// TODO
-	data->areas = malloc(sizeof(*data->areas) * 128);
-	while (i < 128 && EOF != fscanf(f, "0x%lx - 0x%lx (%lx)\n", &start, &end, &offset)) {
-		while (i < 128 && REUSE_AREA_SIZE < (end - start)) {
-			printf("DEBUG: using area %lx - %lx, offset: %lx\n",
-					start, start + REUSE_AREA_SIZE, offset);
-			data->areas[i].offset = offset;
-			start += REUSE_AREA_SIZE;
-			offset += REUSE_AREA_SIZE;
-			size += REUSE_AREA_SIZE;
-			i ++;
-		}
-	}
-	data->area_num = i;
-	fclose(f);
+	area_num_max = max_size / REUSE_AREA_SIZE;
+	cdev->size = 0;
+	cdev->areas = malloc(sizeof(*cdev->areas) * area_num_max);
+	cdev->area_num_max = area_num_max;
+	cdev->area_num = 0;
 
-	printf("DEBUG: usable size %lx\n", size);
-	return size;
+	mkdumpf_find_reusable(vmcore_span_end, max_size, REUSE_AREA_SIZE, _vmcore_find_reusable_cb, cdev);
+
+	vmcore_span_end = cdev->vmcore_end;
+
+	return cdev->size;
 }
 
 int crash_block_dev_start(struct crash_block_dev *cdev) {
@@ -323,8 +347,9 @@ struct crash_block_dev* crash_block_dev_new(char *nbd_dev_file, size_t max_size)
 	ndev->nbd_dev_file = strdup(nbd_dev_file);
 
 	/* Find reuseable areas*/
-	actual_size = vmcore_find_reuseable("/proc/vmcore", 0, cdev);
-	cdev->size = actual_size;
+	actual_size = vmcore_find_reuseable(cdev, max_size);
+	printf("Found %ldMB reusable memory\n", actual_size / (1 << 20));
+
 	cdev->vmcore_fd = open("/proc/vmcore", O_RDWR);
 
 	block_size = 512;

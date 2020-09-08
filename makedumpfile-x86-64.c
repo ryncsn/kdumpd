@@ -96,19 +96,19 @@ get_page_offset_x86_64(void)
 	unsigned long page_offset_base;
 	unsigned long page_offset = 0;
 
-	if (info->kaslr_offset && info->name_vmlinux) {
-		page_offset_base = get_symbol_addr("page_offset_base");
-		page_offset_base += info->kaslr_offset;
-		if (!readmem(VADDR, page_offset_base, &info->page_offset,
-					sizeof(info->page_offset))) {
-			 ERRMSG("Can't read page_offset_base.\n");
-			 return FALSE;
-		}
-		DEBUG_MSG("page_offset  : %lx (vmlinux page_offset_base)\n",
-			info->page_offset);
-		return TRUE;
-	}
-
+//	if (info->kaslr_offset && info->name_vmlinux) {
+//		page_offset_base = get_symbol_addr("page_offset_base");
+//		page_offset_base += info->kaslr_offset;
+//		if (!readmem(VADDR, page_offset_base, &info->page_offset,
+//					sizeof(info->page_offset))) {
+//			 ERRMSG("Can't read page_offset_base.\n");
+//			 return FALSE;
+//		}
+//		DEBUG_MSG("page_offset  : %lx (vmlinux page_offset_base)\n",
+//			info->page_offset);
+//		return TRUE;
+//	}
+//
 	if (get_num_pt_loads()) {
 		/*
 		 * Linux 4.19 (only) adds KCORE_REMAP PT_LOADs, which have
@@ -162,15 +162,15 @@ get_phys_base_x86_64(void)
 		return TRUE;
 	}
 
-	/* linux-2.6.21 or older don't have phys_base, should be set to 0. */
-	if (!has_vmcoreinfo() && info->name_vmlinux) {
-		SYMBOL_INIT(phys_base, "phys_base");
-		if (SYMBOL(phys_base) == NOT_FOUND_SYMBOL) {
-			DEBUG_MSG("phys_base    : %lx (no phys_base)\n",
-				info->phys_base);
-			return TRUE;
-		}
-	}
+	// /* linux-2.6.21 or older don't have phys_base, should be set to 0. */
+	// if (!has_vmcoreinfo() && info->name_vmlinux) {
+	// 	SYMBOL_INIT(phys_base, "phys_base");
+	// 	if (SYMBOL(phys_base) == NOT_FOUND_SYMBOL) {
+	// 		DEBUG_MSG("phys_base    : %lx (no phys_base)\n",
+	// 			info->phys_base);
+	// 		return TRUE;
+	// 	}
+	// }
 
 	for (i = 0; get_pt_load(i, &phys_start, NULL, &virt_start, NULL); i++) {
 		if (virt_start >= __START_KERNEL_map

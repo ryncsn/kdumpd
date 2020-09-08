@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #define NBD_CMD_MASK_COMMAND 0x0000ffff
+#define VMCORE "/proc/vmcore"
 
 struct nbd_dev {
 	int nbd_fd;
@@ -29,12 +30,17 @@ struct crash_block_dev {
 	unsigned long size;
 	int vmcore_fd;
 
-	// TODO: Use bit based radix tree
-	int area_num;
+	// TODO: Use radix tree
+	int area_num, area_num_max;
 	struct areas {
 		unsigned long offset;
 		unsigned long size;
 	} *areas;
+	/*
+	 * This block dev runs in this VMCORE region, other block dev
+	 * should avoid using this region
+	 */
+	unsigned long vmcore_start, vmcore_end;
 
 	struct nbd_dev *nbd_dev;
 };
